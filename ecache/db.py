@@ -7,7 +7,7 @@ import threading
 import contextlib
 import os
 import time
-import sha
+import hashlib
 import gevent
 
 from sqlalchemy import event
@@ -26,7 +26,7 @@ class RoutingSession(Session):
     def __init__(self, engines, *args, **kwargs):
         super(RoutingSession, self).__init__(*args, **kwargs)
         self.engines = engines
-        self.slave_engines = [e for role, e in engines.iteritems()
+        self.slave_engines = [e for role, e in engines.items()
                               if role != 'master']
         assert self.slave_engines, ValueError('DB slave config is wrong!')
         self._id = self.gen_id()
@@ -49,8 +49,8 @@ class RoutingSession(Session):
         clock = time.time() * 1000
         address = id(self)
         hash_key = self.hash_key
-        return sha.new('{0}\0{1}\0{2}\0{3}\0{4}'.format(
-            pid, tid, clock, address, hash_key)).hexdigest()[:20]
+        return hashlib.new('sha1', data='{0}\0{1}\0{2}\0{3}\0{4}'.format(
+            pid, tid, clock, address, hash_key).encode('utf8')).hexdigest()[:20]
 
     def rollback(self):
         with gevent.Timeout(5):
@@ -59,7 +59,7 @@ class RoutingSession(Session):
     def close(self):
         current_transactions = tuple()
         if self.transaction is not None:
-            current_transactions = self.transaction._iterate_parents()
+            current_transactions = self.transaction._iterate_self_and_parents()
         try:
             with gevent.Timeout(5):
                 super(RoutingSession, self).close()
@@ -81,7 +81,7 @@ class ModelMeta(DeclarativeMeta):
     def __new__(self, name, bases, attrs):
         cls = DeclarativeMeta.__new__(self, name, bases, attrs)
 
-        from core import CacheMixinBase
+        from ecache.core import CacheMixinBase
         for base in bases:
             if issubclass(base, CacheMixinBase) and hasattr(cls, "_hook"):
                 cls._hook.add(cls)
@@ -105,7 +105,7 @@ def patch_engine(engine):
 def scope_func():
     if not hasattr(db_ctx, 'session_stack'):
         db_ctx.session_stack = 0
-    return (threading.current_thread().ident, db_ctx.session_stack)
+    return threading.current_thread().ident, db_ctx.session_stack
 
 
 def make_session(engines, force_scope=False, info=None):
@@ -156,6 +156,8 @@ def close_connections(engines, transactions):
 
 
 def sql_commenter(conn, cursor, statement, params, context, executemany):
+    # TODO
+    return statement, params
     pass
 
 
@@ -163,7 +165,7 @@ class DBManager(object):
     def __init__(self):
         self.session_map = {}
 
-    def create_sessions(self, settings):
+    def create_sessions(self, settings: dict):
         """settings example
 DB_SETTINGS = {
     'test': {
@@ -177,9 +179,9 @@ DB_SETTINGS = {
     }
 }
         """
-        if not settings.DB_SETTINGS:
+        if not settings:
             raise ValueError('DB_SETTINGS is empty, check it')
-        for db, db_configs in settings.DB_SETTINGS.iteritems():
+        for db, db_configs in settings.items():
             self.add_session(db, db_configs)
 
     def get_session(self, name):
@@ -200,7 +202,7 @@ DB_SETTINGS = {
     @classmethod
     def _make_session(cls, db, config):
         urls = config['urls']
-        for name, url in urls.iteritems():
+        for name, url in urls.items():
             assert url, "Url configured not properly for %s:%s" % (db, name)
         pool_size = config.get('pool_size', 10)
         max_overflow = config.get('max_overflow', 1)
@@ -211,18 +213,18 @@ DB_SETTINGS = {
                                     max_overflow=max_overflow,
                                     pool_recycle=pool_recycle,
                                     execution_options={'role': role})
-            for role, dsn in urls.iteritems()
+            for role, dsn in urls.items()
         }
         return make_session(engines, info={"name": db})
 
     def close_sessions(self, should_close_connection=False):
         dbsessions = self.session_map
-        for dbsession in dbsessions.itervalues():
+        for dbsession in dbsessions.values():
             if should_close_connection:
                 session = dbsession()
                 if session.transaction is not None:
-                    close_connections(session.engines.itervalues(),
-                                      session.transaction._iterate_parents())
+                    close_connections(session.engines.values(),
+                                      session.transaction._iterate_self_and_parents())
             try:
                 dbsession.remove()
             except:

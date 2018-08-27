@@ -48,16 +48,18 @@ class EventHook(sqlalchemy_es_pub):
 
         self.logger.info("set raw data cache for {} {}".format(tablename, pk))
 
-    def _delete_sub(self, obj):
-        obj.flush([obj.pk])
+    def _delete_sub(self, obj, model):
+        pk_name = model.pk_name()
+        pk = obj[pk_name]
+        model.flush([pk])
 
         self.logger.info("delete cache for {} {}".format(
-            obj.__tablename__, obj.pk))
+            model.__tablename__, model.pk))
 
     def session_prepare(self, session, _):
         super(EventHook, self).session_prepare(session, _)
 
-        if hasattr(session, 'pending_rawdata'):
+        if not hasattr(session, 'pending_rawdata'):
             session.pending_rawdata = {}
 
         for obj in itertools.chain(session.pending_write,
@@ -71,7 +73,7 @@ class EventHook(sqlalchemy_es_pub):
 
     def session_commit(self, session):
         if hasattr(session, 'pending_rawdata'):
-            self._pub_cache_events("rawdata", session.pending_rawdata)
+            self._pub_cache_events("delete_raw", session.pending_rawdata)
 
         super(EventHook, self).session_commit(session)
 

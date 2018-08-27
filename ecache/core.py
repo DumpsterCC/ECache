@@ -3,7 +3,6 @@
 import logging
 import itertools
 import redis
-
 import sqlalchemy.exc as sa_exc
 from sqlalchemy.orm.util import identity_key
 from sqlalchemy.orm import attributes
@@ -36,7 +35,6 @@ class _Failed(object):
 
 
 class CacheMixinBase(object):
-
     RAWDATA_VERSION = None
 
     TABLE_CACHE_EXPIRATION_TIME = None
@@ -123,25 +121,26 @@ class CacheMixinBase(object):
 
     @classmethod
     def _statsd_incr(cls, key, val=1):
-        pass
+        print(cls.__tablename__, cls.pk_name(), key, val)
 
     @classmethod
     def flush(cls, ids):
-        keys = itertools.chain(*[
+        keys = itertools.chain([
             cls.gen_raw_key(i) for i in ids])
         cls._cache_client.delete(*keys)
 
     @classmethod
     def from_cache(cls, rawdata):
-        obj = cls(**rawdata)
+        s = bytes.decode(rawdata)
+        obj = cls(**eval(s))
         obj._cached = True
         make_transient_to_detached(obj)
         cls._db_session.add(obj)
         return obj
 
     @classmethod
-    def get(cls, pk, force=False):
-        if not force:
+    def get(cls, pk, readonly=True):
+        if readonly:
             ident_key = identity_key(cls, pk)
             if cls._db_session.identity_map and \
                     ident_key in cls._db_session.identity_map:
@@ -150,27 +149,26 @@ class CacheMixinBase(object):
             try:
                 cached_val = cls._cache_client.get(cls.gen_raw_key(pk))
                 if cached_val:
-                    cls._statsd_incr('hit')
+                    cls._statsd_incr(str(pk) + ' hit in cache', 1)
                     return cls.from_cache(cached_val)
             except redis.ConnectionError as e:
                 logger.error(e)
             except TypeError as e:
                 logger.error(e)
 
-        cls._statsd_incr('miss')
-
+        cls._statsd_incr(str(pk) + ' miss in cache', 0)
         obj = cls._db_session().query(cls).get(pk)
         if obj is not None:
             cls.set_raw(obj.__rawdata__)
         return obj
 
     @classmethod
-    def mget(cls, pks, force=False, as_dict=False):
+    def mget(cls, pks, readonly=True, as_dict=False):
         if not pks:
             return {} if as_dict else []
 
         objs = {}
-        if not force:
+        if readonly:
             if cls._db_session.identity_map:
                 for pk in pks:
                     ident_key = identity_key(cls, pk)
@@ -195,7 +193,7 @@ class CacheMixinBase(object):
         if lack_pks:
             pk = cls.pk_attribute()
             if pk:
-                lack_objs = cls._db_session().query(cls).\
+                lack_objs = cls._db_session().query(pk). \
                     filter(pk.in_(lack_pks)).all()
                 if lack_objs:
                     cls.mset(lack_objs)
